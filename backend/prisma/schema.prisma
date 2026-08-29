@@ -1,0 +1,162 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum WorkType {
+  CHECKLIST
+  TASK
+}
+
+enum ChecklistStatus {
+  SCHEDULED
+  OPEN
+  IN_PROGRESS
+  BLOCKED
+  COMPLETED
+  OVERDUE
+}
+
+enum ItemStatus {
+  PENDING
+  DONE
+  BLOCKED
+}
+
+enum Recurrence {
+  NONE
+  WEEKLY
+  MONTHLY
+}
+
+enum PostponeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                    String             @id @default(cuid())
+  name                  String
+  username              String?            @unique
+  email                 String?            @unique
+  passwordHash          String
+  mustChangePassword    Boolean            @default(true)
+  position              String
+  role                  Role               @default(EMPLOYEE)
+  active                Boolean            @default(true)
+  deletedAt             DateTime?
+  telegramChatId        String?
+  createdAt             DateTime            @default(now())
+  assignedChecklists    Checklist[]         @relation("AssignedTo")
+  checklistAssignments ChecklistAssignment[]
+  createdChecklists     Checklist[]         @relation("CreatedBy")
+  comments              Comment[]
+  itemUpdates           ChecklistItem[]     @relation("ItemUpdatedBy")
+  requestedPostponements PostponeRequest[]   @relation("PostponeRequester")
+  decidedPostponements   PostponeRequest[]   @relation("PostponeDecider")
+}
+
+model Checklist {
+  id                String           @id @default(cuid())
+  type              WorkType         @default(CHECKLIST)
+  title             String
+  description       String?
+  status            ChecklistStatus  @default(OPEN)
+  startDate         DateTime         @default(now())
+  dueDate           DateTime
+  recurrence        Recurrence       @default(NONE)
+  assigneeId        String
+  createdById       String
+  taskComment       String?
+  taskBlockedReason String?
+  completedAt       DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  assignee          User             @relation("AssignedTo", fields: [assigneeId], references: [id])
+  createdBy         User             @relation("CreatedBy", fields: [createdById], references: [id])
+  items             ChecklistItem[]
+  comments          Comment[]
+  postponeRequests  PostponeRequest[]
+  assignments       ChecklistAssignment[]
+}
+
+model ChecklistAssignment {
+  checklistId String
+  userId      String
+  assignedAt  DateTime  @default(now())
+  checklist   Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([checklistId, userId])
+  @@index([userId])
+}
+
+model ChecklistItem {
+  id            String       @id @default(cuid())
+  checklistId   String
+  title         String
+  description   String?
+  sortOrder     Int          @default(0)
+  requiresPhoto Boolean      @default(false)
+  status        ItemStatus   @default(PENDING)
+  blockedReason String?
+  completedAt   DateTime?
+  updatedById   String?
+  checklist     Checklist    @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  updatedBy     User?        @relation("ItemUpdatedBy", fields: [updatedById], references: [id])
+  attachments   Attachment[]
+}
+
+model Attachment {
+  id        String        @id @default(cuid())
+  itemId    String
+  fileName  String
+  filePath  String
+  mimeType  String
+  createdAt DateTime      @default(now())
+  item      ChecklistItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+}
+
+model Comment {
+  id          String    @id @default(cuid())
+  checklistId String
+  authorId    String
+  text        String
+  createdAt   DateTime  @default(now())
+  checklist   Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  author      User      @relation(fields: [authorId], references: [id])
+}
+
+model PostponeRequest {
+  id           String          @id @default(cuid())
+  checklistId  String
+  requesterId  String
+  reason       String
+  status       PostponeStatus  @default(PENDING)
+  newDueDate   DateTime?
+  decisionNote String?
+  decidedById  String?
+  createdAt    DateTime        @default(now())
+  decidedAt    DateTime?
+  checklist    Checklist       @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  requester    User            @relation("PostponeRequester", fields: [requesterId], references: [id])
+  decidedBy    User?           @relation("PostponeDecider", fields: [decidedById], references: [id])
+}
+
+
+model NotificationLog {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  createdAt DateTime @default(now())
+}
