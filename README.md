@@ -130,15 +130,6 @@ changed.
 > Do not continue using the default password in a production
 > environment.
 
-## Updating
-
-Before updating, it is recommended to back up PostgreSQL.
-
-``` bash
-docker compose down
-docker compose up -d --build
-```
-
 Do **not** use `docker compose down -v` unless you intentionally want to
 remove the database volume and its data.
 
@@ -169,10 +160,3 @@ deadlines, notifications and work history.
 
 ------------------------------------------------------------------------
 
-```{=html}
-<p align="center">
-```
-`<strong>`{=html}CheckFlow --- Your Workspace`</strong>`{=html}
-```{=html}
-</p>
-```
