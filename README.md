@@ -81,7 +81,7 @@ docker compose version
 ### Download
 
 ``` bash
-git clone https://github.com/YOUR-USERNAME/checkflow.git
+git clone https://github.com/RyVolodya/checkflow.git
 cd checkflow
 ```
 
