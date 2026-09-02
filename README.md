@@ -4,8 +4,7 @@
 
 <h1 align="center">CheckFlow</h1>
 
-## CheckFlow is a lightweight, self-hosted web application for managing
-employee tasks and checklists.
+## CheckFlow is a lightweight, self-hosted web application for managing employee tasks and checklists.
 
 ![CheckFlow Screenshot](docs/images/checkflow.png)
 
