@@ -1,19 +1,11 @@
 # CheckFlow
 
-```{=html}
 <p align="center">
-```
-`<img src="docs/images/brand-mark.png" alt="CheckFlow Logo" width="140">`{=html}
-```{=html}
+  <img src="docs/images/brand-mark.png" alt="Check Flow logo" width="96" height="96">
 </p>
-```
-```{=html}
-<p align="center">
-```
-`<strong>`{=html}CheckFlow --- Your Workspace`</strong>`{=html}
-```{=html}
-</p>
-```
+
+<h1 align="center">CheckFlow</h1>
+
 CheckFlow is a lightweight, self-hosted web application for managing
 employee tasks and checklists.
 
