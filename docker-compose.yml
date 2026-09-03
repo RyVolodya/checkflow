@@ -1,5 +1,6 @@
 services:
   db:
+    restart: unless-stopped
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: checkflow
@@ -7,6 +8,8 @@ services:
       POSTGRES_PASSWORD: checkflow
     volumes:
       - checkflow_db:/var/lib/postgresql/data
+    networks:
+      - checkflow_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U checkflow -d checkflow"]
       interval: 5s
@@ -14,6 +17,7 @@ services:
       retries: 10
 
   backend:
+    restart: unless-stopped
     build: ./backend
     environment:
       DATABASE_URL: postgresql://checkflow:checkflow@db:5432/checkflow?schema=public
@@ -30,14 +34,23 @@ services:
         condition: service_healthy
     ports:
       - "4000:4000"
+    networks:
+      - checkflow_net
 
   frontend:
+    restart: unless-stopped
     build: ./frontend
     depends_on:
       - backend
     ports:
       - "8088:80"
+    networks:
+      - checkflow_net
 
 volumes:
   checkflow_db:
   checkflow_uploads:
+
+networks:
+  checkflow_net:
+    name: checkflow_net

@@ -20,6 +20,7 @@ enum WorkType {
 
 enum ChecklistStatus {
   SCHEDULED
+  DEFERRED
   OPEN
   IN_PROGRESS
   BLOCKED
@@ -37,6 +38,7 @@ enum Recurrence {
   NONE
   WEEKLY
   MONTHLY
+  CUSTOM_DAYS
 }
 
 enum PostponeStatus {
@@ -57,6 +59,8 @@ model User {
   active                Boolean            @default(true)
   deletedAt             DateTime?
   telegramChatId        String?
+  canViewGroupTasks     Boolean            @default(false)
+  groups                UserGroupMembership[]
   createdAt             DateTime            @default(now())
   assignedChecklists    Checklist[]         @relation("AssignedTo")
   checklistAssignments ChecklistAssignment[]
@@ -73,9 +77,10 @@ model Checklist {
   title             String
   description       String?
   status            ChecklistStatus  @default(OPEN)
-  startDate         DateTime         @default(now())
-  dueDate           DateTime
+  startDate         DateTime?        @default(now())
+  dueDate           DateTime?
   recurrence        Recurrence       @default(NONE)
+  recurrenceDays    Int?
   assigneeId        String
   createdById       String
   taskComment       String?
@@ -159,4 +164,42 @@ model NotificationLog {
   id        String   @id @default(cuid())
   key       String   @unique
   createdAt DateTime @default(now())
+}
+
+model WorkTemplate {
+  id          String     @id @default(cuid())
+  name        String
+  type        WorkType   @default(CHECKLIST)
+  title       String
+  description String?
+  recurrence  Recurrence @default(NONE)
+  recurrenceDays Int?
+  assigneeIds Json
+  items       Json
+  createdById String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([name])
+  @@index([createdById])
+}
+
+
+model WorkGroup {
+  id        String                @id @default(cuid())
+  name      String                @unique
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+  members   UserGroupMembership[]
+}
+
+model UserGroupMembership {
+  userId    String
+  groupId   String
+  joinedAt  DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group     WorkGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+  @@index([groupId])
 }
