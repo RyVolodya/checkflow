@@ -152,7 +152,7 @@ async function refreshOneStatus(checklistId: string) {
   const c = await prisma.checklist.findUnique({ where:{id:checklistId}, include:{items:true} });
   if (!c) return;
   const now = new Date();
-  if (c.status === ChecklistStatus.COMPLETED) return;
+  if (c.status === ChecklistStatus.COMPLETED && c.type === WorkType.TASK) return;
   let status: ChecklistStatus = c.status;
   let completedAt: Date | null = c.completedAt;
   if (c.status === ChecklistStatus.DEFERRED || !c.startDate || !c.dueDate) {
@@ -164,7 +164,8 @@ async function refreshOneStatus(checklistId: string) {
   } else if (c.type === WorkType.CHECKLIST) {
     if (c.items.length && c.items.every(i=>i.status===ItemStatus.DONE)) {
       status = ChecklistStatus.COMPLETED;
-      completedAt = completedAt || now;
+      const itemCompletionTimes = c.items.map(i=>i.completedAt).filter((d): d is Date=>!!d);
+      completedAt = itemCompletionTimes.length ? new Date(Math.max(...itemCompletionTimes.map(d=>d.getTime()))) : (completedAt || now);
     } else if (c.dueDate < now) status = ChecklistStatus.OVERDUE;
     else if (c.items.some(i=>i.status!==ItemStatus.PENDING)) status = ChecklistStatus.IN_PROGRESS;
     else status = ChecklistStatus.OPEN;
@@ -264,7 +265,7 @@ async function ensureBootstrapUser() {
   await prisma.user.create({ data:{username,name:"Manager",passwordHash,position:"Administrator",role:Role.ADMIN,mustChangePassword:true} });
 }
 
-app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.9.0",telegramConfigured:!!telegramToken}));
+app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.9.1",telegramConfigured:!!telegramToken}));
 
 app.post("/api/auth/login", async (req,res)=>{
   const parsed=z.object({username:z.string().trim().min(1),password:z.string().min(1)}).safeParse(req.body);
@@ -431,7 +432,8 @@ app.patch("/api/items/:id",auth,async(req,res)=>{
   const id=routeParam(req.params.id); const item=await prisma.checklistItem.findUnique({where:{id},include:{checklist:true,attachments:true}}); if(!item)return res.status(404).json({error:"Не знайдено"});
   if(!(await userCanAccessChecklist(item.checklistId,req.user!)))return res.status(403).json({error:"Forbidden"});
   if(parsed.data.status===ItemStatus.DONE&&item.requiresPhoto&&item.attachments.length===0)return res.status(400).json({error:"Для цього пункту потрібно додати фото перед завершенням"});
-  const updated=await prisma.checklistItem.update({where:{id},data:{status:parsed.data.status,blockedReason:parsed.data.status===ItemStatus.BLOCKED?parsed.data.blockedReason:null,completedAt:parsed.data.status===ItemStatus.DONE?new Date():null,updatedById:req.user!.id}});
+  const completionTime = parsed.data.status===ItemStatus.DONE ? (item.status===ItemStatus.DONE && item.completedAt ? item.completedAt : new Date()) : null;
+  const updated=await prisma.checklistItem.update({where:{id},data:{status:parsed.data.status,blockedReason:parsed.data.status===ItemStatus.BLOCKED?parsed.data.blockedReason:null,completedAt:completionTime,updatedById:req.user!.id}});
   await refreshOneStatus(item.checklistId); res.json(updated);
 });
 
@@ -613,4 +615,4 @@ app.post("/api/templates/from-checklist/:id",auth,allow(Role.ADMIN,Role.MANAGER)
 });
 
 app.use((err:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{console.error(err);res.status(500).json({error:"Internal server error"});});
-ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.9.0 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
+ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.9.1 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
