@@ -28,8 +28,8 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => cb(null, file.mimetype.startsWith("image/"))
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => cb(null, /\.(pdf|docx?|xlsx?|csv|txt|odt|ods|pptx?|png|jpe?g|gif|webp|bmp)$/i.test(file.originalname))
 });
 
 type TokenUser = { id: string; role: Role; username: string };
@@ -65,6 +65,7 @@ const listInclude = {
   createdBy:{ select:{ id:true,name:true,position:true,role:true } },
   assignments:{ include:{ user:{ select:{ id:true,name:true,username:true,position:true,role:true } } }, orderBy:{assignedAt:"asc" as const} },
   items:{ include:{ attachments:true }, orderBy:{ sortOrder:"asc" as const } },
+  attachments:true,
   postponeRequests:{ where:{ status:PostponeStatus.PENDING }, include:{ requester:{select:{id:true,name:true,position:true}} }, orderBy:{createdAt:"desc" as const} }
 };
 const detailInclude = {
@@ -72,6 +73,7 @@ const detailInclude = {
   assignments:{include:{user:{select:{id:true,name:true,username:true,position:true,role:true}}},orderBy:{assignedAt:"asc" as const}},
   createdBy:{select:{id:true,name:true}},
   items:{include:{attachments:true},orderBy:{sortOrder:"asc" as const}},
+  attachments:true,
   comments:{include:{author:{select:{id:true,name:true}}},orderBy:{createdAt:"asc" as const}},
   postponeRequests:{include:{requester:{select:{id:true,name:true,position:true}},decidedBy:{select:{id:true,name:true}}},orderBy:{createdAt:"desc" as const}}
 };
@@ -265,7 +267,7 @@ async function ensureBootstrapUser() {
   await prisma.user.create({ data:{username,name:"Manager",passwordHash,position:"Administrator",role:Role.ADMIN,mustChangePassword:true} });
 }
 
-app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.10.5",telegramConfigured:!!telegramToken}));
+app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.10.7",telegramConfigured:!!telegramToken}));
 
 app.post("/api/auth/login", async (req,res)=>{
   const parsed=z.object({username:z.string().trim().min(1),password:z.string().min(1)}).safeParse(req.body);
@@ -410,9 +412,9 @@ app.patch("/api/checklists/:id",auth,allow(Role.ADMIN,Role.MANAGER),async(req,re
 
 app.delete("/api/checklists/:id",auth,allow(Role.ADMIN),async(req,res)=>{
   const id=routeParam(req.params.id);
-  const existing=await prisma.checklist.findUnique({where:{id},include:{items:{include:{attachments:true}}}});
+  const existing=await prisma.checklist.findUnique({where:{id},include:{items:{include:{attachments:true}},attachments:true}});
   if(!existing)return res.status(404).json({error:"Не знайдено"});
-  const files=existing.items.flatMap(item=>item.attachments.map(a=>a.filePath));
+  const files=[...existing.attachments.map(a=>a.filePath),...existing.items.flatMap(item=>item.attachments.map(a=>a.filePath))];
   await prisma.checklist.delete({where:{id}});
   for(const filePath of files){
     const fileName=path.basename(filePath);
@@ -450,11 +452,20 @@ app.patch("/api/items/:id",auth,async(req,res)=>{
   await refreshOneStatus(item.checklistId); res.json(updated);
 });
 
-app.post("/api/items/:id/photo",auth,upload.single("photo"),async(req,res)=>{
+app.post("/api/items/:id/file",auth,upload.single("file"),async(req,res)=>{
   if(!req.file)return res.status(400).json({error:"Потрібно вибрати фото"});
   const id=routeParam(req.params.id); const item=await prisma.checklistItem.findUnique({where:{id},include:{checklist:true}}); if(!item)return res.status(404).json({error:"Не знайдено"});
   if(!(await userCanAccessChecklist(item.checklistId,req.user!)))return res.status(403).json({error:"Forbidden"});
   res.status(201).json(await prisma.attachment.create({data:{itemId:item.id,fileName:req.file.originalname,filePath:`/uploads/${req.file.filename}`,mimeType:req.file.mimetype}}));
+});
+
+app.post("/api/checklists/:id/files",auth,upload.single("file"),async(req,res)=>{
+  const id=routeParam(req.params.id);
+  const checklist=await prisma.checklist.findUnique({where:{id}});
+  if(!checklist){if(req.file)fs.promises.unlink(req.file.path).catch(()=>{});return res.status(404).json({error:"Not found"});}
+  if(!(await userCanAccessChecklist(id,req.user!))){if(req.file)fs.promises.unlink(req.file.path).catch(()=>{});return res.status(403).json({error:"Forbidden"});}
+  if(!req.file)return res.status(400).json({error:"Choose a supported file"});
+  res.status(201).json(await prisma.attachment.create({data:{checklistId:id,fileName:req.file.originalname,filePath:`/uploads/${req.file.filename}`,mimeType:req.file.mimetype}}));
 });
 
 app.post("/api/checklists/:id/task-state",auth,async(req,res)=>{
@@ -628,4 +639,4 @@ app.post("/api/templates/from-checklist/:id",auth,allow(Role.ADMIN,Role.MANAGER)
 });
 
 app.use((err:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{console.error(err);res.status(500).json({error:"Internal server error"});});
-ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.10.5 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
+ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.10.7 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
