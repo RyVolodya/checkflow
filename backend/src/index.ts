@@ -265,7 +265,7 @@ async function ensureBootstrapUser() {
   await prisma.user.create({ data:{username,name:"Manager",passwordHash,position:"Administrator",role:Role.ADMIN,mustChangePassword:true} });
 }
 
-app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.9.1",telegramConfigured:!!telegramToken}));
+app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.10.5",telegramConfigured:!!telegramToken}));
 
 app.post("/api/auth/login", async (req,res)=>{
   const parsed=z.object({username:z.string().trim().min(1),password:z.string().min(1)}).safeParse(req.body);
@@ -408,6 +408,19 @@ app.patch("/api/checklists/:id",auth,allow(Role.ADMIN,Role.MANAGER),async(req,re
   await refreshOneStatus(id); res.json(result);
 });
 
+app.delete("/api/checklists/:id",auth,allow(Role.ADMIN),async(req,res)=>{
+  const id=routeParam(req.params.id);
+  const existing=await prisma.checklist.findUnique({where:{id},include:{items:{include:{attachments:true}}}});
+  if(!existing)return res.status(404).json({error:"Не знайдено"});
+  const files=existing.items.flatMap(item=>item.attachments.map(a=>a.filePath));
+  await prisma.checklist.delete({where:{id}});
+  for(const filePath of files){
+    const fileName=path.basename(filePath);
+    try{await fs.promises.unlink(path.join(uploadDir,fileName));}catch(err:any){if(err?.code!=="ENOENT")console.error("Failed to remove attachment",fileName,err);}
+  }
+  res.json({ok:true});
+});
+
 app.post("/api/checklists/:id/board-state",auth,async(req,res)=>{
   const parsed=z.object({status:z.enum(["DEFERRED","COMPLETED","OPEN","IN_PROGRESS","SCHEDULED","OVERDUE"]),startDate:z.string().datetime().optional(),dueDate:z.string().datetime().optional()}).safeParse(req.body); if(!parsed.success)return res.status(400).json({error:"Некоректний статус"});
   const id=routeParam(req.params.id); const c=await prisma.checklist.findUnique({where:{id}}); if(!c)return res.status(404).json({error:"Не знайдено"});
@@ -536,7 +549,7 @@ app.get("/api/efficiency",auth,async(req,res)=>{
   const period=["day","week","month","year"].includes(String(req.query.period))?String(req.query.period):"month"; const range=rangeForPeriod(period,typeof req.query.anchor==="string"?req.query.anchor:undefined);if(!range)return res.status(400).json({error:"Некоректний період"});
   const visible=await visibleUserIds(req.user!); let ids=visible===null?undefined:visible; const requested=typeof req.query.userId==="string"?req.query.userId:"";
   if(req.user!.role===Role.EMPLOYEE)ids=[req.user!.id]; else if(requested&&requested!=="ALL"){if(ids&&!ids.includes(requested))return res.status(403).json({error:"Forbidden"});ids=[requested]}
-  const users=await prisma.user.findMany({where:{deletedAt:null,...(ids?{id:{in:ids}}:{})},select:{id:true,name:true,position:true,role:true},orderBy:{name:"asc"}});
+  const users=await prisma.user.findMany({where:{deletedAt:null,role:{in:[Role.EMPLOYEE,Role.MANAGER]},...(ids?{id:{in:ids}}:{})},select:{id:true,name:true,position:true,role:true},orderBy:{name:"asc"}});
   const userIds=users.map(u=>u.id); const rows=await prisma.checklist.findMany({where:{assignments:{some:{userId:{in:userIds}}},OR:[{completedAt:{gte:range.start,lte:range.end}},{status:ChecklistStatus.OVERDUE,dueDate:{gte:range.start,lte:range.end}}]},select:{id:true,status:true,startDate:true,dueDate:true,completedAt:true,assignments:{select:{userId:true}}}});
   const summary=users.map(u=>{const mine=rows.filter(r=>r.assignments.some(a=>a.userId===u.id));const completed=mine.filter(r=>r.status===ChecklistStatus.COMPLETED&&r.completedAt);const overdue=mine.filter(r=>r.status===ChecklistStatus.OVERDUE);const durations=completed.filter(r=>r.startDate&&r.completedAt).map(r=>(r.completedAt!.getTime()-r.startDate!.getTime())/3600000);const onTime=completed.filter(r=>r.completedAt&&r.dueDate&&r.completedAt<=r.dueDate).length;return {...u,total:mine.length,completed:completed.length,overdue:overdue.length,onTimeRate:completed.length?Math.round(onTime/completed.length*100):0,completionRate:mine.length?Math.round(completed.length/mine.length*100):0,avgHours:durations.length?Math.round(durations.reduce((a,b)=>a+b,0)/durations.length*10)/10:0}});
   const allForTrend=rows; const map=new Map<string,{label:string;completed:number;overdue:number}>(); for(const r of allForTrend){const d=r.completedAt||r.dueDate;if(!d)continue;const label=bucketKey(d,period);const item=map.get(label)||{label,completed:0,overdue:0};if(r.status===ChecklistStatus.COMPLETED)item.completed++;if(r.status===ChecklistStatus.OVERDUE)item.overdue++;map.set(label,item)}
@@ -615,4 +628,4 @@ app.post("/api/templates/from-checklist/:id",auth,allow(Role.ADMIN,Role.MANAGER)
 });
 
 app.use((err:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{console.error(err);res.status(500).json({error:"Internal server error"});});
-ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.9.1 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
+ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.10.5 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
