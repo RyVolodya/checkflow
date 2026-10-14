@@ -195,3 +195,11 @@ main>header{height:68px;background:color-mix(in srgb,var(--surface) 88%,transpar
 .attachment-links a,.attachment-file{display:inline-flex;align-items:center;gap:7px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;color:var(--text);background:var(--surface2);text-decoration:none}
 .attachment-links svg,.attachment-file svg{width:17px;height:17px}
 .editor-attachments{padding:14px;border:1px dashed var(--line);border-radius:12px;margin:14px 0}.editor-attachments label{display:grid;gap:8px}
+
+/* v0.10.8: editable attachments */
+.editor-attachment-list{display:grid;gap:7px;margin-top:12px}.editor-attachment-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border:1px solid var(--line);border-radius:9px;background:var(--surface2);min-width:0}.editor-attachment-row a,.editor-attachment-row span{display:flex;align-items:center;gap:8px;min-width:0;overflow-wrap:anywhere;color:var(--text);text-decoration:none}.editor-attachment-row svg{width:17px;height:17px;flex-shrink:0}.editor-attachment-row .attachment-remove{display:grid;place-items:center;flex-shrink:0;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted);padding:6px}.editor-attachment-row .attachment-remove:hover{color:var(--danger);border-color:var(--danger);background:color-mix(in srgb,var(--danger) 8%,transparent)}
+
+/* v0.10.12: 24-hour efficiency labels, compact and scrollable */
+.line-chart-wrap:has(.hourly-labels){overflow-x:auto}
+.line-chart-wrap:has(.hourly-labels) .line-chart,.line-chart-wrap:has(.hourly-labels) .line-chart-labels{min-width:900px}
+.hourly-labels span{font-size:10px;white-space:nowrap}
