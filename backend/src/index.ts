@@ -28,8 +28,8 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => cb(null, file.mimetype.startsWith("image/"))
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => cb(null, /\.(pdf|docx?|xlsx?|csv|txt|odt|ods|pptx?|png|jpe?g|gif|webp|bmp)$/i.test(file.originalname))
 });
 
 type TokenUser = { id: string; role: Role; username: string };
@@ -65,6 +65,7 @@ const listInclude = {
   createdBy:{ select:{ id:true,name:true,position:true,role:true } },
   assignments:{ include:{ user:{ select:{ id:true,name:true,username:true,position:true,role:true } } }, orderBy:{assignedAt:"asc" as const} },
   items:{ include:{ attachments:true }, orderBy:{ sortOrder:"asc" as const } },
+  attachments:true,
   postponeRequests:{ where:{ status:PostponeStatus.PENDING }, include:{ requester:{select:{id:true,name:true,position:true}} }, orderBy:{createdAt:"desc" as const} }
 };
 const detailInclude = {
@@ -72,6 +73,7 @@ const detailInclude = {
   assignments:{include:{user:{select:{id:true,name:true,username:true,position:true,role:true}}},orderBy:{assignedAt:"asc" as const}},
   createdBy:{select:{id:true,name:true}},
   items:{include:{attachments:true},orderBy:{sortOrder:"asc" as const}},
+  attachments:true,
   comments:{include:{author:{select:{id:true,name:true}}},orderBy:{createdAt:"asc" as const}},
   postponeRequests:{include:{requester:{select:{id:true,name:true,position:true}},decidedBy:{select:{id:true,name:true}}},orderBy:{createdAt:"desc" as const}}
 };
@@ -212,6 +214,26 @@ async function checklistWhereForUser(user:TokenUser){
   if(ids===null)return {};
   return {OR:[{assigneeId:{in:ids}},{assignments:{some:{userId:{in:ids}}}}]};
 }
+// History visibility is based strictly on actual assignment, not on manager/team visibility.
+// Group assignments are expanded into individual ChecklistAssignment rows at creation time.
+function historyWhereForUser(user:TokenUser){
+  if(user.role===Role.ADMIN)return {};
+  return {OR:[{assigneeId:user.id},{assignments:{some:{userId:user.id}}}]};
+}
+async function isArchivedChecklist(id:string){
+  const c=await prisma.checklist.findUnique({where:{id},select:{status:true,completedAt:true,dueDate:true}});
+  if(!c)return false;
+  const cutoff=new Date();cutoff.setMonth(cutoff.getMonth()-1);
+  return (c.status===ChecklistStatus.COMPLETED&&!!c.completedAt&&c.completedAt<=cutoff)
+    ||(c.status===ChecklistStatus.OVERDUE&&!!c.dueDate&&c.dueDate<=cutoff);
+}
+async function canReadChecklist(id:string,user:TokenUser){
+  if(await isArchivedChecklist(id)){
+    const match=await prisma.checklist.findFirst({where:{AND:[{id},historyWhereForUser(user)]},select:{id:true}});
+    return !!match;
+  }
+  return userCanAccessChecklist(id,user);
+}
 async function assertAssignableUsers(user:TokenUser,userIds:string[]){
   if(user.role===Role.ADMIN)return true;
   if(user.role===Role.EMPLOYEE)return false;
@@ -265,7 +287,7 @@ async function ensureBootstrapUser() {
   await prisma.user.create({ data:{username,name:"Manager",passwordHash,position:"Administrator",role:Role.ADMIN,mustChangePassword:true} });
 }
 
-app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.10.5",telegramConfigured:!!telegramToken}));
+app.get("/api/health", (_req,res)=>res.json({ok:true,version:"0.10.12",telegramConfigured:!!telegramToken}));
 
 app.post("/api/auth/login", async (req,res)=>{
   const parsed=z.object({username:z.string().trim().min(1),password:z.string().min(1)}).safeParse(req.body);
@@ -341,16 +363,20 @@ app.get("/api/checklists",auth,async(req,res)=>{
 app.get("/api/history",auth,async(req,res)=>{
   await refreshStatuses(req.user);
   const cutoff=new Date(); cutoff.setMonth(cutoff.getMonth()-1);
-  const base=await checklistWhereForUser(req.user!);
-  const rows=await prisma.checklist.findMany({where:{...base,OR:[{status:ChecklistStatus.COMPLETED,completedAt:{lte:cutoff}},{status:ChecklistStatus.OVERDUE,dueDate:{lte:cutoff}}]},include:listInclude,orderBy:[{dueDate:"desc"}]});
+  const base=historyWhereForUser(req.user!);
+  const rows=await prisma.checklist.findMany({where:{AND:[base,{OR:[{status:ChecklistStatus.COMPLETED,completedAt:{lte:cutoff}},{status:ChecklistStatus.OVERDUE,dueDate:{lte:cutoff}}]}]},include:listInclude,orderBy:[{dueDate:"desc"}]});
   res.json(rows);
 });
 
 app.get("/api/checklists/:id",auth,async(req,res)=>{
-  const id=routeParam(req.params.id); await refreshOneStatus(id);
+  const id=routeParam(req.params.id);
+  if(!(await canReadChecklist(id,req.user!)))return res.status(403).json({error:"Forbidden"});
+  const current=await prisma.checklist.findUnique({where:{id},select:{status:true}});
+  if(!current)return res.status(404).json({error:"Не знайдено"});
+  // Historical records are immutable on read: do not recalculate their status.
+  if(current.status!==ChecklistStatus.COMPLETED&&current.status!==ChecklistStatus.OVERDUE)await refreshOneStatus(id);
   const c=await prisma.checklist.findUnique({where:{id},include:detailInclude});
   if(!c)return res.status(404).json({error:"Не знайдено"});
-  if(!(await userCanAccessChecklist(id,req.user!)))return res.status(403).json({error:"Forbidden"});
   res.json(c);
 });
 
@@ -410,9 +436,9 @@ app.patch("/api/checklists/:id",auth,allow(Role.ADMIN,Role.MANAGER),async(req,re
 
 app.delete("/api/checklists/:id",auth,allow(Role.ADMIN),async(req,res)=>{
   const id=routeParam(req.params.id);
-  const existing=await prisma.checklist.findUnique({where:{id},include:{items:{include:{attachments:true}}}});
+  const existing=await prisma.checklist.findUnique({where:{id},include:{items:{include:{attachments:true}},attachments:true}});
   if(!existing)return res.status(404).json({error:"Не знайдено"});
-  const files=existing.items.flatMap(item=>item.attachments.map(a=>a.filePath));
+  const files=[...existing.attachments.map(a=>a.filePath),...existing.items.flatMap(item=>item.attachments.map(a=>a.filePath))];
   await prisma.checklist.delete({where:{id}});
   for(const filePath of files){
     const fileName=path.basename(filePath);
@@ -450,11 +476,31 @@ app.patch("/api/items/:id",auth,async(req,res)=>{
   await refreshOneStatus(item.checklistId); res.json(updated);
 });
 
-app.post("/api/items/:id/photo",auth,upload.single("photo"),async(req,res)=>{
+app.post("/api/items/:id/file",auth,upload.single("file"),async(req,res)=>{
   if(!req.file)return res.status(400).json({error:"Потрібно вибрати фото"});
   const id=routeParam(req.params.id); const item=await prisma.checklistItem.findUnique({where:{id},include:{checklist:true}}); if(!item)return res.status(404).json({error:"Не знайдено"});
   if(!(await userCanAccessChecklist(item.checklistId,req.user!)))return res.status(403).json({error:"Forbidden"});
   res.status(201).json(await prisma.attachment.create({data:{itemId:item.id,fileName:req.file.originalname,filePath:`/uploads/${req.file.filename}`,mimeType:req.file.mimetype}}));
+});
+
+app.post("/api/checklists/:id/files",auth,upload.single("file"),async(req,res)=>{
+  const id=routeParam(req.params.id);
+  const checklist=await prisma.checklist.findUnique({where:{id}});
+  if(!checklist){if(req.file)fs.promises.unlink(req.file.path).catch(()=>{});return res.status(404).json({error:"Not found"});}
+  if(!(await userCanAccessChecklist(id,req.user!))){if(req.file)fs.promises.unlink(req.file.path).catch(()=>{});return res.status(403).json({error:"Forbidden"});}
+  if(!req.file)return res.status(400).json({error:"Choose a supported file"});
+  res.status(201).json(await prisma.attachment.create({data:{checklistId:id,fileName:req.file.originalname,filePath:`/uploads/${req.file.filename}`,mimeType:req.file.mimetype}}));
+});
+
+app.delete("/api/checklists/:id/files/:fileId",auth,async(req,res)=>{
+  const checklistId=routeParam(req.params.id);
+  const fileId=routeParam(req.params.fileId);
+  if(!(await userCanAccessChecklist(checklistId,req.user!)))return res.status(403).json({error:"Forbidden"});
+  const attachment=await prisma.attachment.findFirst({where:{id:fileId,checklistId}});
+  if(!attachment)return res.status(404).json({error:"File not found"});
+  await prisma.attachment.delete({where:{id:fileId}});
+  try{await fs.promises.unlink(path.join(uploadDir,path.basename(attachment.filePath)))}catch(err:any){if(err?.code!=="ENOENT")console.error("Failed to delete attachment",fileId,err)}
+  res.json({ok:true});
 });
 
 app.post("/api/checklists/:id/task-state",auth,async(req,res)=>{
@@ -553,7 +599,11 @@ app.get("/api/efficiency",auth,async(req,res)=>{
   const userIds=users.map(u=>u.id); const rows=await prisma.checklist.findMany({where:{assignments:{some:{userId:{in:userIds}}},OR:[{completedAt:{gte:range.start,lte:range.end}},{status:ChecklistStatus.OVERDUE,dueDate:{gte:range.start,lte:range.end}}]},select:{id:true,status:true,startDate:true,dueDate:true,completedAt:true,assignments:{select:{userId:true}}}});
   const summary=users.map(u=>{const mine=rows.filter(r=>r.assignments.some(a=>a.userId===u.id));const completed=mine.filter(r=>r.status===ChecklistStatus.COMPLETED&&r.completedAt);const overdue=mine.filter(r=>r.status===ChecklistStatus.OVERDUE);const durations=completed.filter(r=>r.startDate&&r.completedAt).map(r=>(r.completedAt!.getTime()-r.startDate!.getTime())/3600000);const onTime=completed.filter(r=>r.completedAt&&r.dueDate&&r.completedAt<=r.dueDate).length;return {...u,total:mine.length,completed:completed.length,overdue:overdue.length,onTimeRate:completed.length?Math.round(onTime/completed.length*100):0,completionRate:mine.length?Math.round(completed.length/mine.length*100):0,avgHours:durations.length?Math.round(durations.reduce((a,b)=>a+b,0)/durations.length*10)/10:0}});
   const allForTrend=rows; const map=new Map<string,{label:string;completed:number;overdue:number}>(); for(const r of allForTrend){const d=r.completedAt||r.dueDate;if(!d)continue;const label=bucketKey(d,period);const item=map.get(label)||{label,completed:0,overdue:0};if(r.status===ChecklistStatus.COMPLETED)item.completed++;if(r.status===ChecklistStatus.OVERDUE)item.overdue++;map.set(label,item)}
-  res.json({period,start:range.start,end:range.end,summary,trend:[...map.values()]});
+  const trend=period==="day"?Array.from({length:24},(_,hour)=>({label:`${String(hour).padStart(2,"0")}:00`,completed:0,overdue:0})): [...map.values()];
+  if(period==="day"){
+    for(const r of allForTrend){const date=r.status===ChecklistStatus.COMPLETED?r.completedAt:r.status===ChecklistStatus.OVERDUE?r.dueDate:null;if(!date)continue;const hour=Number(new Intl.DateTimeFormat("en-GB",{hour:"2-digit",hourCycle:"h23",timeZone:"Europe/Kyiv"}).format(date));if(Number.isInteger(hour)&&hour>=0&&hour<24){if(r.status===ChecklistStatus.COMPLETED)trend[hour].completed++;else if(r.status===ChecklistStatus.OVERDUE)trend[hour].overdue++;}}
+  }
+  res.json({period,start:range.start,end:range.end,summary,trend});
 });
 
 
@@ -628,4 +678,4 @@ app.post("/api/templates/from-checklist/:id",auth,allow(Role.ADMIN,Role.MANAGER)
 });
 
 app.use((err:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{console.error(err);res.status(500).json({error:"Internal server error"});});
-ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.10.5 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
+ensureBootstrapUser().then(ensureAssignments).then(ensurePostponeAuditComments).then(()=>{app.listen(port,"0.0.0.0",()=>console.log(`CheckFlow API v0.10.12 on :${port}`));void runDeadlineNotifications();setInterval(()=>void runDeadlineNotifications(),60*60*1000)}).catch(e=>{console.error(e);process.exit(1)});
