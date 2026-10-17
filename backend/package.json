@@ -1,6 +1,6 @@
 {
   "name": "checkflow-backend",
-  "version": "0.10.12",
+  "version": "0.10.17",
   "private": true,
   "type": "module",
   "scripts": {

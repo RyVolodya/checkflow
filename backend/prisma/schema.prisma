@@ -32,6 +32,7 @@ enum ItemStatus {
   PENDING
   DONE
   BLOCKED
+  CLOSED
 }
 
 enum Recurrence {
@@ -117,6 +118,7 @@ model ChecklistItem {
   requiresPhoto Boolean      @default(false)
   status        ItemStatus   @default(PENDING)
   blockedReason String?
+  comment       String?
   completedAt   DateTime?
   updatedById   String?
   checklist     Checklist    @relation(fields: [checklistId], references: [id], onDelete: Cascade)

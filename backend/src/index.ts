@@ -164,7 +164,7 @@ async function refreshOneStatus(checklistId: string) {
   } else if (isFutureStartDay(c.startDate)) {
     status = ChecklistStatus.SCHEDULED;
   } else if (c.type === WorkType.CHECKLIST) {
-    if (c.items.length && c.items.every(i=>i.status===ItemStatus.DONE)) {
+    if (c.items.length && c.items.every(i=>i.status===ItemStatus.DONE||i.status===ItemStatus.CLOSED)) {
       status = ChecklistStatus.COMPLETED;
       const itemCompletionTimes = c.items.map(i=>i.completedAt).filter((d): d is Date=>!!d);
       completedAt = itemCompletionTimes.length ? new Date(Math.max(...itemCompletionTimes.map(d=>d.getTime()))) : (completedAt || now);
@@ -454,7 +454,7 @@ app.post("/api/checklists/:id/board-state",auth,async(req,res)=>{
   const target=parsed.data.status as ChecklistStatus;
   if(target===ChecklistStatus.DEFERRED){const updated=await prisma.checklist.update({where:{id},data:{status:ChecklistStatus.DEFERRED,startDate:null,dueDate:null,completedAt:null}});return res.json(updated);}
   if(target===ChecklistStatus.COMPLETED){const updated=await prisma.checklist.update({where:{id},data:{status:ChecklistStatus.COMPLETED,completedAt:new Date()}});await createNextOccurrence(id);return res.json(updated);}
-  if(c.status===ChecklistStatus.OVERDUE&&target===ChecklistStatus.OPEN){
+  if((c.status===ChecklistStatus.OVERDUE||c.status===ChecklistStatus.DEFERRED)&&target===ChecklistStatus.OPEN){
     if(!parsed.data.startDate||!parsed.data.dueDate)return res.status(409).json({error:"DATES_REQUIRED"});
     const startDate=new Date(parsed.data.startDate),dueDate=new Date(parsed.data.dueDate);
     if(dueDate<=startDate)return res.status(400).json({error:"Термін виконання має бути пізніше дати початку"});
@@ -466,14 +466,24 @@ app.post("/api/checklists/:id/board-state",auth,async(req,res)=>{
 });
 
 app.patch("/api/items/:id",auth,async(req,res)=>{
-  const parsed=z.object({status:z.nativeEnum(ItemStatus),blockedReason:z.string().optional()}).safeParse(req.body); if(!parsed.success)return res.status(400).json({error:"Некоректний статус"});
+  const parsed=z.object({status:z.nativeEnum(ItemStatus),blockedReason:z.string().optional(),comment:z.string().max(3000).optional()}).safeParse(req.body); if(!parsed.success)return res.status(400).json({error:"Некоректний статус"});
   if(parsed.data.status===ItemStatus.BLOCKED&&!parsed.data.blockedReason?.trim())return res.status(400).json({error:"Для невиконаного пункту потрібно вказати причину"});
   const id=routeParam(req.params.id); const item=await prisma.checklistItem.findUnique({where:{id},include:{checklist:true,attachments:true}}); if(!item)return res.status(404).json({error:"Не знайдено"});
   if(!(await userCanAccessChecklist(item.checklistId,req.user!)))return res.status(403).json({error:"Forbidden"});
   if(parsed.data.status===ItemStatus.DONE&&item.requiresPhoto&&item.attachments.length===0)return res.status(400).json({error:"Для цього пункту потрібно додати фото перед завершенням"});
-  const completionTime = parsed.data.status===ItemStatus.DONE ? (item.status===ItemStatus.DONE && item.completedAt ? item.completedAt : new Date()) : null;
-  const updated=await prisma.checklistItem.update({where:{id},data:{status:parsed.data.status,blockedReason:parsed.data.status===ItemStatus.BLOCKED?parsed.data.blockedReason:null,completedAt:completionTime,updatedById:req.user!.id}});
+  const completionTime = (parsed.data.status===ItemStatus.DONE||parsed.data.status===ItemStatus.CLOSED) ? (item.completedAt || new Date()) : null;
+  const updated=await prisma.checklistItem.update({where:{id},data:{status:parsed.data.status,blockedReason:parsed.data.status===ItemStatus.BLOCKED||parsed.data.status===ItemStatus.CLOSED?parsed.data.blockedReason:null,comment:parsed.data.comment===undefined?undefined:parsed.data.comment,completedAt:completionTime,updatedById:req.user!.id}});
   await refreshOneStatus(item.checklistId); res.json(updated);
+});
+
+app.patch("/api/items/:id/comment",auth,async(req,res)=>{
+  const parsed=z.object({comment:z.string().max(3000)}).safeParse(req.body);
+  if(!parsed.success)return res.status(400).json({error:"Invalid comment"});
+  const id=routeParam(req.params.id);
+  const item=await prisma.checklistItem.findUnique({where:{id},select:{checklistId:true}});
+  if(!item)return res.status(404).json({error:"Not found"});
+  if(!(await userCanAccessChecklist(item.checklistId,req.user!)))return res.status(403).json({error:"Forbidden"});
+  res.json(await prisma.checklistItem.update({where:{id},data:{comment:parsed.data.comment,updatedById:req.user!.id}}));
 });
 
 app.post("/api/items/:id/file",auth,upload.single("file"),async(req,res)=>{
@@ -504,13 +514,13 @@ app.delete("/api/checklists/:id/files/:fileId",auth,async(req,res)=>{
 });
 
 app.post("/api/checklists/:id/task-state",auth,async(req,res)=>{
-  const parsed=z.object({status:z.enum(["DONE","BLOCKED"]),comment:z.string().max(3000).optional()}).safeParse(req.body); if(!parsed.success)return res.status(400).json({error:"Некоректні дані"});
+  const parsed=z.object({status:z.enum(["DONE","BLOCKED","CLOSED"]),comment:z.string().max(3000).optional()}).safeParse(req.body); if(!parsed.success)return res.status(400).json({error:"Некоректні дані"});
   const id=routeParam(req.params.id); const c=await prisma.checklist.findUnique({where:{id}}); if(!c||c.type!==WorkType.TASK)return res.status(404).json({error:"Завдання не знайдено"});
   if(!(await userCanAccessChecklist(id,req.user!)))return res.status(403).json({error:"Forbidden"});
-  if(parsed.data.status==="BLOCKED"&&!parsed.data.comment?.trim())return res.status(400).json({error:"Вкажіть причину, чому завдання неможливо виконати"});
-  const completed=parsed.data.status==="DONE";
-  const updated=await prisma.checklist.update({where:{id},data:{status:completed?ChecklistStatus.COMPLETED:ChecklistStatus.BLOCKED,completedAt:completed?new Date():null,taskComment:completed?(parsed.data.comment?.trim()||null):null,taskBlockedReason:completed?null:parsed.data.comment!.trim()}});
-  if(completed)await createNextOccurrence(id); res.json(updated);
+  if(parsed.data.status!=="DONE"&&!parsed.data.comment?.trim())return res.status(400).json({error:"Вкажіть причину, чому завдання неможливо виконати"});
+  const completed=parsed.data.status==="DONE",closed=parsed.data.status==="CLOSED";
+  const updated=await prisma.checklist.update({where:{id},data:{status:completed||closed?ChecklistStatus.COMPLETED:ChecklistStatus.BLOCKED,completedAt:completed||closed?new Date():null,taskComment:completed?(parsed.data.comment?.trim()||null):null,taskBlockedReason:completed?null:parsed.data.comment!.trim()}});
+  if(completed||closed)await createNextOccurrence(id); res.json(updated);
 });
 
 app.post("/api/checklists/:id/comments",auth,async(req,res)=>{
